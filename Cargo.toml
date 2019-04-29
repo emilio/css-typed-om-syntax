@@ -1,0 +1,8 @@
+[package]
+name = "css-typed-om-syntax"
+version = "0.1.0"
+authors = ["Emilio Cobos Álvarez <emilio@crisal.io>"]
+edition = "2018"
+description = "Parser https://drafts.css-houdini.org/css-properties-values-api-1/#parsing-syntax"
+
+[dependencies]
