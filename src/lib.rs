@@ -17,6 +17,8 @@ pub enum ParseError {
     InvalidCustomIdent,
     InvalidNameStart,
     EmptyName,
+    UnclosedDataTypeName,
+    UnknownDataTypeName,
 }
 
 /// https://drafts.css-houdini.org/css-properties-values-api-1/#multipliers
@@ -73,6 +75,13 @@ impl ComponentName {
 
 #[derive(Debug, PartialEq)]
 pub enum DataType {}
+
+impl DataType {
+    fn from_bytes(_: &[u8]) -> Option<Self> {
+        // TODO
+        None
+    }
+}
 
 /// Parse a syntax descriptor or universal syntax descriptor.
 pub fn parse_descriptor(input: &str) -> Result<Descriptor, ParseError> {
@@ -214,7 +223,22 @@ impl<'a, 'b> Parser<'a, 'b> {
 
     /// https://drafts.css-houdini.org/css-properties-values-api-1/#consume-data-type-name
     fn parse_data_type_name(&mut self) -> Result<DataType, ParseError> {
-        unimplemented!()
+        let start = self.position;
+        loop {
+            let byte = match self.peek() {
+                Some(b) => b,
+                None => return Err(ParseError::UnclosedDataTypeName),
+            };
+            if byte != b'>' {
+                continue;
+            }
+            let ty = match DataType::from_bytes(&self.input[start..self.position]) {
+                Some(ty) => ty,
+                None => return Err(ParseError::UnknownDataTypeName),
+            };
+            self.position += 1;
+            return Ok(ty)
+        }
     }
 
     /// https://drafts.csswg.org/css-syntax-3/#consume-a-name
