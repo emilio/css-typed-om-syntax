@@ -192,7 +192,7 @@ struct Parser<'a, 'b> {
 /// https://drafts.csswg.org/css-syntax-3/#whitespace
 fn is_whitespace(byte: u8) -> bool {
     match byte {
-        b'\t' | b'\n' | b'\r' | b'\x0c' => true,
+        b'\t' | b'\n' | b'\r' | b' ' => true,
         _ => false,
     }
 }
@@ -201,7 +201,7 @@ fn is_whitespace(byte: u8) -> bool {
 fn is_letter(byte: u8) -> bool {
     match byte {
         b'A'...b'Z' |
-        b'a'...b'a' => true,
+        b'a'...b'z' => true,
         _ => false,
     }
 }
