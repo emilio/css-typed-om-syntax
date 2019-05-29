@@ -34,12 +34,12 @@ impl<I: Impl> Descriptor<I> {
 #[derive(Debug, PartialEq)]
 pub enum ParseError {
     EmptyInput,
-    UnexpectedEOF,
-    UnexpectedPipe,
+    ExpectedPipeBetweenComponents,
     InvalidCustomIdent,
     InvalidNameStart,
     InvalidName,
     UnclosedDataTypeName,
+    UnexpectedEOF,
     UnknownDataTypeName,
 }
 
@@ -207,20 +207,17 @@ impl<'a, 'b, I: Impl> Parser<'a, 'b, I> {
                 continue;
             }
 
-            // U+007C VERTICAL LINE (|):
-            //  * If descriptor's size is greater than zero, consume a syntax
-            //    component from stream. If failure was returned, return failure;
-            //    otherwise, append the returned value to descriptor.
-            //  * If descriptor's size is zero, return failure.
-            if byte == b'|' {
-                if self.output.is_empty() {
-                    return Err(ParseError::UnexpectedPipe);
-                }
-                self.position += 1;
+            // Intentional deviation from the spec, see:
+            // https://github.com/w3c/css-houdini-drafts/issues/893
+            if !self.output.is_empty() && byte != b'|' {
+                return Err(ParseError::ExpectedPipeBetweenComponents);
             }
 
+            if byte == b'|' {
+                self.position += 1;
+            }
             let component = self.parse_component()?;
-            self.output.push(component)
+            self.output.push(component);
         }
     }
 
@@ -308,29 +305,43 @@ impl<'a, 'b, I: Impl> Parser<'a, 'b, I> {
     }
 }
 
-#[test]
-fn universal() {
-    for syntax in &["*", " * ", "* ", "\t*\t"] {
-        assert_eq!(parse_descriptor(syntax), Ok(Descriptor::universal()));
-    }
-}
-
-#[test]
-fn simple_length() {
+// FIXME(emilio): If / when I ever hook this up to Gecko, these should become
+// WPTs.
+#[cfg(test)]
+mod tests {
+    use super::*;
     use default_impl::*;
     macro_rules! ident {
         ($str:expr) => {
             ComponentName::Ident(CustomIdent::from_ident($str).unwrap())
         }
     }
-    assert_eq!(parse_descriptor("foo <length>#"), Ok(Descriptor(Box::new([
-        Component {
-            name: ident!("foo"),
-            multiplier: None,
-        },
-        Component {
-            name: ComponentName::DataType(DataType::Length),
-            multiplier: Some(Multiplier::Comma),
-        },
-    ]))))
+
+    #[test]
+    fn universal() {
+        for syntax in &["*", " * ", "* ", "\t*\t"] {
+            assert_eq!(parse_descriptor(syntax), Ok(Descriptor::universal()));
+        }
+    }
+
+    #[test]
+    fn pipe_between_components() {
+        for syntax in &["foo bar", "Foo <length>",  "foo, bar", "<length> <percentage>"] {
+            assert_eq!(parse_descriptor(syntax), Err(ParseError::ExpectedPipeBetweenComponents))
+        }
+    }
+
+    #[test]
+    fn simple_length() {
+        assert_eq!(parse_descriptor("foo | <length>#"), Ok(Descriptor(Box::new([
+            Component {
+                name: ident!("foo"),
+                multiplier: None,
+            },
+            Component {
+                name: ComponentName::DataType(DataType::Length),
+                multiplier: Some(Multiplier::Comma),
+            },
+        ]))))
+    }
 }
