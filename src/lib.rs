@@ -1,11 +1,31 @@
 use std::borrow::Cow;
+use std::fmt::Debug;
 
 mod ascii;
+mod default_impl;
+
+use default_impl::DefaultImpl;
+
+/// A trait that allows to customize the parsing of syntax descriptors to use
+/// custom data types, and identifiers.
+pub trait Impl: Clone + Debug + PartialEq + 'static {
+    /// The custom identifier type.
+    type CustomIdent: Clone + Debug + PartialEq + 'static;
+    /// The custom DataType name.
+    type DataType: Clone + Debug + PartialEq + 'static;
+    /// Consumes a custom identifier from a string that is a valid `<ident>`.
+    fn custom_ident_from_ident(ident: &str) -> Option<Self::CustomIdent>;
+    /// Consumes a custom data type name.
+    fn data_type_name_from_str(name: &str) -> Option<Self::DataType>;
+    /// If the data type is premultiplied, return the un-premultiplied
+    /// component.
+    fn unpremultiply_data_type(data_type: &Self::DataType) -> Option<Component<Self>>;
+}
 
 /// https://drafts.css-houdini.org/css-properties-values-api-1/#parsing-syntax
 #[derive(Debug, PartialEq)]
-pub struct Descriptor(Box<[Component]>);
-impl Descriptor {
+pub struct Descriptor<I: Impl>(Box<[Component<I>]>);
+impl<I: Impl> Descriptor<I> {
     fn universal() -> Self {
         Descriptor(Box::new([]))
     }
@@ -31,14 +51,14 @@ pub enum Multiplier {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Component {
-    name: ComponentName,
+pub struct Component<I: Impl> {
+    name: ComponentName<I>,
     multiplier: Option<Multiplier>,
 }
 
-impl Component {
+impl<I: Impl> Component<I> {
     #[inline]
-    pub fn name(&self) -> &ComponentName {
+    pub fn name(&self) -> &ComponentName<I> {
         &self.name
     }
 
@@ -48,7 +68,7 @@ impl Component {
     }
 
     #[inline]
-    pub fn unpremultipied(&self) -> Cow<Self> {
+    pub fn unpremultiplied(&self) -> Cow<Self> {
         match self.name.unpremultiply() {
             Some(component) => {
                 debug_assert!(
@@ -63,31 +83,15 @@ impl Component {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct CustomIdent(Box<str>);
-
-impl CustomIdent {
-    fn from_ident(ident: &str) -> Result<Self, ()> {
-        if ident.eq_ignore_ascii_case("inherit") ||
-            ident.eq_ignore_ascii_case("reset") ||
-            ident.eq_ignore_ascii_case("revert") ||
-            ident.eq_ignore_ascii_case("unset") ||
-            ident.eq_ignore_ascii_case("default") {
-            return Err(());
-        }
-        Ok(CustomIdent(ident.to_owned().into_boxed_str()))
-    }
+pub enum ComponentName<I: Impl> {
+    DataType(I::DataType),
+    Ident(I::CustomIdent),
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum ComponentName {
-    DataType(DataType),
-    Ident(CustomIdent),
-}
-
-impl ComponentName {
-    fn unpremultiply(&self) -> Option<Component> {
+impl<I: Impl> ComponentName<I> {
+    fn unpremultiply(&self) -> Option<Component<I>> {
         match *self {
-            ComponentName::DataType(ref t) => t.unpremultiply(),
+            ComponentName::DataType(ref t) => I::unpremultiply_data_type(t),
             ComponentName::Ident(..) => None,
         }
     }
@@ -98,60 +102,13 @@ impl ComponentName {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum DataType {
-    Length,
-    Number,
-    Percentage,
-    LengthPercentage,
-    Color,
-    Image,
-    Url,
-    Integer,
-    Angle,
-    Time,
-    Resolution,
-    TransformFunction,
-    TransformList,
-    CustomIdent,
+/// Parse a syntax descriptor with the default implementation.
+#[inline]
+pub fn parse_descriptor(input: &str) -> Result<Descriptor<DefaultImpl>, ParseError> {
+    parse_descriptor_with::<DefaultImpl>(input)
 }
 
-impl DataType {
-    fn unpremultiply(&self) -> Option<Component> {
-        match *self {
-            DataType::TransformList => Some(Component {
-                name: ComponentName::DataType(DataType::TransformFunction),
-                multiplier: Some(Multiplier::Space),
-            }),
-            _ => None,
-        }
-    }
-}
-
-impl DataType {
-    fn from_bytes(ty: &[u8]) -> Option<Self> {
-        Some(match ty {
-            b"length" => DataType::Length,
-            b"number" => DataType::Number,
-            b"percentage" => DataType::Percentage,
-            b"length-percentage" => DataType::LengthPercentage,
-            b"color" => DataType::Color,
-            b"image" => DataType::Image,
-            b"url" => DataType::Url,
-            b"integer" => DataType::Integer,
-            b"angle" => DataType::Angle,
-            b"time" => DataType::Time,
-            b"resolution" => DataType::Resolution,
-            b"transform-function" => DataType::TransformFunction,
-            b"custom-ident" => DataType::CustomIdent,
-            b"transform-list" => DataType::TransformList,
-            _ => return None,
-        })
-    }
-}
-
-/// Parse a syntax descriptor or universal syntax descriptor.
-pub fn parse_descriptor(input: &str) -> Result<Descriptor, ParseError> {
+pub fn parse_descriptor_with<I: Impl>(input: &str) -> Result<Descriptor<I>, ParseError> {
     // 1. Strip leading and trailing ASCII whitespace from string.
     let input = ascii::trim_ascii_whitespace(input);
 
@@ -181,10 +138,11 @@ pub fn parse_descriptor(input: &str) -> Result<Descriptor, ParseError> {
     Ok(Descriptor(components.into_boxed_slice()))
 }
 
-struct Parser<'a, 'b> {
+struct Parser<'a, 'b, I: Impl> {
     input: &'a str,
     position: usize,
-    output: &'b mut Vec<Component>,
+    output: &'b mut Vec<Component<I>>,
+    phantom: std::marker::PhantomData<I>,
 }
 
 /// https://drafts.csswg.org/css-syntax-3/#whitespace
@@ -214,12 +172,13 @@ fn is_name_start(byte: u8) -> bool {
     is_letter(byte) || is_non_ascii(byte) || byte == b'_'
 }
 
-impl<'a, 'b> Parser<'a, 'b> {
-    fn new(input: &'a str, output: &'b mut Vec<Component>) -> Self {
+impl<'a, 'b, I: Impl> Parser<'a, 'b, I> {
+    fn new(input: &'a str, output: &'b mut Vec<Component<I>>) -> Self {
         Self {
             input,
             position: 0,
             output,
+            phantom: std::marker::PhantomData,
         }
     }
 
@@ -275,7 +234,7 @@ impl<'a, 'b> Parser<'a, 'b> {
     }
 
     /// https://drafts.css-houdini.org/css-properties-values-api-1/#consume-data-type-name
-    fn parse_data_type_name(&mut self) -> Result<DataType, ParseError> {
+    fn parse_data_type_name(&mut self) -> Result<I::DataType, ParseError> {
         let start = self.position;
         loop {
             let byte = match self.peek() {
@@ -286,7 +245,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                 self.position += 1;
                 continue;
             }
-            let ty = match DataType::from_bytes(&self.input.as_bytes()[start..self.position]) {
+            let ty = match I::data_type_name_from_str(&self.input[start..self.position]) {
                 Some(ty) => ty,
                 None => return Err(ParseError::UnknownDataTypeName),
             };
@@ -295,7 +254,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         }
     }
 
-    fn parse_name(&mut self) -> Result<ComponentName, ParseError> {
+    fn parse_name(&mut self) -> Result<ComponentName<I>, ParseError> {
         let b = match self.peek() {
             Some(b) => b,
             None => return Err(ParseError::UnexpectedEOF),
@@ -315,11 +274,11 @@ impl<'a, 'b> Parser<'a, 'b> {
         let mut input = cssparser::Parser::new(&mut input);
         let name = input
             .expect_ident()
-            .map_err(|_| ())
-            .and_then(|name| CustomIdent::from_ident(name.as_ref()));
+            .ok()
+            .and_then(|name| I::custom_ident_from_ident(name.as_ref()));
         let name = match name {
-            Ok(name) => name,
-            Err(..) => return Err(ParseError::InvalidName),
+            Some(name) => name,
+            None => return Err(ParseError::InvalidName),
         };
         self.position += input.position().byte_index();
         return Ok(ComponentName::Ident(name))
@@ -336,7 +295,7 @@ impl<'a, 'b> Parser<'a, 'b> {
     }
 
     /// https://drafts.css-houdini.org/css-properties-values-api-1/#consume-a-syntax-component
-    fn parse_component(&mut self) -> Result<Component, ParseError> {
+    fn parse_component(&mut self) -> Result<Component<I>, ParseError> {
         // Consume as much whitespace as possible from stream.
         self.skip_whitespace();
         let name = self.parse_name()?;
@@ -358,6 +317,7 @@ fn universal() {
 
 #[test]
 fn simple_length() {
+    use default_impl::*;
     macro_rules! ident {
         ($str:expr) => {
             ComponentName::Ident(CustomIdent::from_ident($str).unwrap())
