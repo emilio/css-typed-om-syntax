@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 mod ascii;
 
 /// https://drafts.css-houdini.org/css-properties-values-api-1/#parsing-syntax
@@ -22,19 +24,45 @@ pub enum ParseError {
 }
 
 /// https://drafts.css-houdini.org/css-properties-values-api-1/#multipliers
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Multiplier {
     Space,
     Comma,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Component {
-    pub name: ComponentName,
-    pub multiplier: Option<Multiplier>,
+    name: ComponentName,
+    multiplier: Option<Multiplier>,
 }
 
-#[derive(Debug, PartialEq)]
+impl Component {
+    #[inline]
+    pub fn name(&self) -> &ComponentName {
+        &self.name
+    }
+
+    #[inline]
+    pub fn multiplier(&self) -> Option<Multiplier> {
+        self.multiplier
+    }
+
+    #[inline]
+    pub fn unpremultipied(&self) -> Cow<Self> {
+        match self.name.unpremultiply() {
+            Some(component) => {
+                debug_assert!(
+                    self.multiplier.is_none(),
+                    "Shouldn't have parsed a multiplier for a pre-multiplied data type name",
+                );
+                Cow::Owned(component)
+            }
+            None => Cow::Borrowed(self),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct CustomIdent(Box<[u8]>);
 
 impl CustomIdent {
@@ -51,35 +79,75 @@ impl CustomIdent {
 }
 
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ComponentName {
     DataType(DataType),
     Ident(CustomIdent),
 }
 
-impl DataType {
+impl ComponentName {
+    fn unpremultiply(&self) -> Option<Component> {
+        match *self {
+            ComponentName::DataType(ref t) => t.unpremultiply(),
+            ComponentName::Ident(..) => None,
+        }
+    }
+
+    /// https://drafts.css-houdini.org/css-properties-values-api-1/#pre-multiplied-data-type-name
     fn is_pre_multiplied(&self) -> bool {
-        false
+        self.unpremultiply().is_some()
     }
 }
 
-impl ComponentName {
-    /// https://drafts.css-houdini.org/css-properties-values-api-1/#pre-multiplied-data-type-name
-    fn is_pre_multiplied(&self) -> bool {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DataType {
+    Length,
+    Number,
+    Percentage,
+    LengthPercentage,
+    Color,
+    Image,
+    Url,
+    Integer,
+    Angle,
+    Time,
+    Resolution,
+    TransformFunction,
+    TransformList,
+    CustomIdent,
+}
+
+impl DataType {
+    fn unpremultiply(&self) -> Option<Component> {
         match *self {
-            ComponentName::DataType(ref t) => t.is_pre_multiplied(),
-            ComponentName::Ident(..) => false,
+            DataType::TransformList => Some(Component {
+                name: ComponentName::DataType(DataType::TransformFunction),
+                multiplier: Some(Multiplier::Space),
+            }),
+            _ => None,
         }
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub enum DataType {}
-
 impl DataType {
-    fn from_bytes(_: &[u8]) -> Option<Self> {
-        // TODO
-        None
+    fn from_bytes(ty: &[u8]) -> Option<Self> {
+        Some(match ty {
+            b"length" => DataType::Length,
+            b"number" => DataType::Number,
+            b"percentage" => DataType::Percentage,
+            b"length-percentage" => DataType::LengthPercentage,
+            b"color" => DataType::Color,
+            b"image" => DataType::Image,
+            b"url" => DataType::Url,
+            b"integer" => DataType::Integer,
+            b"angle" => DataType::Angle,
+            b"time" => DataType::Time,
+            b"resolution" => DataType::Resolution,
+            b"transform-function" => DataType::TransformFunction,
+            b"custom-ident" => DataType::CustomIdent,
+            b"transform-list" => DataType::TransformList,
+            _ => return None,
+        })
     }
 }
 
