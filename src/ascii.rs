@@ -2,18 +2,18 @@
 
 /// Trims ascii whitespace characters from a slice, and returns the trimmed
 /// input.
-pub fn trim_ascii_whitespace(input: &[u8]) -> &[u8] {
+pub fn trim_ascii_whitespace(input: &str) -> &str {
     if input.is_empty() {
         return input;
     }
 
     let mut start = 0;
     {
-        let mut iter = input.iter();
+        let mut iter = input.as_bytes().iter();
         loop {
             let byte = match iter.next() {
                 Some(b) => b,
-                None => return &[],
+                None => return "",
             };
 
             if !byte.is_ascii_whitespace() {
@@ -26,13 +26,13 @@ pub fn trim_ascii_whitespace(input: &[u8]) -> &[u8] {
     let mut end = input.len();
     assert!(start < end);
     {
-        let mut iter = input[start..].iter().rev();
+        let mut iter = input.as_bytes()[start..].iter().rev();
         loop {
             let byte = match iter.next() {
                 Some(b) => b,
                 None => {
                     debug_assert!(false, "We should have caught this in the loop above!");
-                    return &[];
+                    return "";
                 },
             };
 
@@ -49,10 +49,7 @@ pub fn trim_ascii_whitespace(input: &[u8]) -> &[u8] {
 #[test]
 fn trim_ascii_whitespace_test() {
     fn test(i: &str, o: &str) {
-        assert_eq!(
-            trim_ascii_whitespace(i.as_bytes()),
-            o.as_bytes(),
-        )
+        assert_eq!(trim_ascii_whitespace(i), o)
     }
 
     test("", "");

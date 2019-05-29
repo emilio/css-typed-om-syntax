@@ -18,7 +18,7 @@ pub enum ParseError {
     UnexpectedPipe,
     InvalidCustomIdent,
     InvalidNameStart,
-    EmptyName,
+    InvalidName,
     UnclosedDataTypeName,
     UnknownDataTypeName,
 }
@@ -63,21 +63,20 @@ impl Component {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct CustomIdent(Box<[u8]>);
+pub struct CustomIdent(Box<str>);
 
 impl CustomIdent {
-    fn from_bytes(ident: &[u8]) -> Result<Self, ParseError> {
-        if ident.eq_ignore_ascii_case(b"inherit") ||
-            ident.eq_ignore_ascii_case(b"reset") ||
-            ident.eq_ignore_ascii_case(b"revert") ||
-            ident.eq_ignore_ascii_case(b"unset") ||
-            ident.eq_ignore_ascii_case(b"default") {
-            return Err(ParseError::InvalidCustomIdent);
+    fn from_ident(ident: &str) -> Result<Self, ()> {
+        if ident.eq_ignore_ascii_case("inherit") ||
+            ident.eq_ignore_ascii_case("reset") ||
+            ident.eq_ignore_ascii_case("revert") ||
+            ident.eq_ignore_ascii_case("unset") ||
+            ident.eq_ignore_ascii_case("default") {
+            return Err(());
         }
-        Ok(CustomIdent(ident.to_vec().into_boxed_slice()))
+        Ok(CustomIdent(ident.to_owned().into_boxed_str()))
     }
 }
-
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ComponentName {
@@ -153,7 +152,6 @@ impl DataType {
 
 /// Parse a syntax descriptor or universal syntax descriptor.
 pub fn parse_descriptor(input: &str) -> Result<Descriptor, ParseError> {
-    let input = input.as_bytes();
     // 1. Strip leading and trailing ASCII whitespace from string.
     let input = ascii::trim_ascii_whitespace(input);
 
@@ -164,7 +162,7 @@ pub fn parse_descriptor(input: &str) -> Result<Descriptor, ParseError> {
 
     // 3. If string's length is 1, and the only code point in string is U+002A
     //    ASTERISK (*), return the universal syntax descriptor.
-    if input.len() == 1 && input[0] == b'*' {
+    if input.len() == 1 && input.as_bytes()[0] == b'*' {
         return Ok(Descriptor::universal());
     }
 
@@ -184,7 +182,7 @@ pub fn parse_descriptor(input: &str) -> Result<Descriptor, ParseError> {
 }
 
 struct Parser<'a, 'b> {
-    input: &'a [u8],
+    input: &'a str,
     position: usize,
     output: &'b mut Vec<Component>,
 }
@@ -211,26 +209,13 @@ fn is_non_ascii(byte: u8) -> bool {
     byte >= 0x80
 }
 
-/// https://drafts.csswg.org/css-syntax-3/#digit
-fn is_digit(byte: u8) -> bool {
-    match byte {
-        b'0'...b'9' => true,
-        _ => false,
-    }
-}
-
 /// https://drafts.csswg.org/css-syntax-3/#name-start-code-point
 fn is_name_start(byte: u8) -> bool {
     is_letter(byte) || is_non_ascii(byte) || byte == b'_'
 }
 
-/// https://drafts.csswg.org/css-syntax-3/#name-code-point
-fn is_name(byte: u8) -> bool {
-    is_name_start(byte) || is_digit(byte) || byte == b'-'
-}
-
 impl<'a, 'b> Parser<'a, 'b> {
-    fn new(input: &'a [u8], output: &'b mut Vec<Component>) -> Self {
+    fn new(input: &'a str, output: &'b mut Vec<Component>) -> Self {
         Self {
             input,
             position: 0,
@@ -239,7 +224,7 @@ impl<'a, 'b> Parser<'a, 'b> {
     }
 
     fn peek(&self) -> Option<u8> {
-        self.input.get(self.position).cloned()
+        self.input.as_bytes().get(self.position).cloned()
     }
 
     fn parse(&mut self) -> Result<(), ParseError> {
@@ -298,36 +283,16 @@ impl<'a, 'b> Parser<'a, 'b> {
                 None => return Err(ParseError::UnclosedDataTypeName),
             };
             if byte != b'>' {
+                self.position += 1;
                 continue;
             }
-            let ty = match DataType::from_bytes(&self.input[start..self.position]) {
+            let ty = match DataType::from_bytes(&self.input.as_bytes()[start..self.position]) {
                 Some(ty) => ty,
                 None => return Err(ParseError::UnknownDataTypeName),
             };
             self.position += 1;
             return Ok(ty)
         }
-    }
-
-    /// https://drafts.csswg.org/css-syntax-3/#consume-a-name
-    /// FIXME(emilio): This should actually use cssparser's consume_name
-    /// to handle correctly escaping and nulls.
-    fn consume_name(&mut self) -> &'a [u8] {
-        let start = self.position;
-
-        loop {
-            let byte = match self.peek() {
-                None => return &self.input[start..],
-                Some(b) => b,
-            };
-
-            if !is_name(byte) {
-                break;
-            }
-            self.position += 1;
-        }
-
-        &self.input[start..self.position]
     }
 
     fn parse_name(&mut self) -> Result<ComponentName, ParseError> {
@@ -345,11 +310,19 @@ impl<'a, 'b> Parser<'a, 'b> {
             return Err(ParseError::InvalidNameStart);
         }
 
-        let name = self.consume_name();
-        if name.is_empty() {
-            return Err(ParseError::EmptyName);
-        }
-        return Ok(ComponentName::Ident(CustomIdent::from_bytes(name)?))
+        let input = &self.input[self.position..];
+        let mut input = cssparser::ParserInput::new(input);
+        let mut input = cssparser::Parser::new(&mut input);
+        let name = input
+            .expect_ident()
+            .map_err(|_| ())
+            .and_then(|name| CustomIdent::from_ident(name.as_ref()));
+        let name = match name {
+            Ok(name) => name,
+            Err(..) => return Err(ParseError::InvalidName),
+        };
+        self.position += input.position().byte_index();
+        return Ok(ComponentName::Ident(name))
     }
 
     fn parse_multiplier(&mut self) -> Option<Multiplier> {
@@ -381,4 +354,23 @@ fn universal() {
     for syntax in &["*", " * ", "* ", "\t*\t"] {
         assert_eq!(parse_descriptor(syntax), Ok(Descriptor::universal()));
     }
+}
+
+#[test]
+fn simple_length() {
+    macro_rules! ident {
+        ($str:expr) => {
+            ComponentName::Ident(CustomIdent::from_ident($str).unwrap())
+        }
+    }
+    assert_eq!(parse_descriptor("foo <length>#"), Ok(Descriptor(Box::new([
+        Component {
+            name: ident!("foo"),
+            multiplier: None,
+        },
+        Component {
+            name: ComponentName::DataType(DataType::Length),
+            multiplier: Some(Multiplier::Comma),
+        },
+    ]))))
 }

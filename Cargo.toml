@@ -6,3 +6,4 @@ edition = "2018"
 description = "Parser https://drafts.css-houdini.org/css-properties-values-api-1/#parsing-syntax"
 
 [dependencies]
+cssparser = "0.25.6" # Need https://github.com/servo/rust-cssparser/pull/249
