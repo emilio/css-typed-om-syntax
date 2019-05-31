@@ -189,35 +189,20 @@ impl<'a, 'b, I: Impl> Parser<'a, 'b, I> {
     fn parse(&mut self) -> Result<(), ParseError> {
         // 5. Repeatedly consume the next input code point from stream:
         loop {
+            let component = self.parse_component()?;
+            self.output.push(component);
+            self.skip_whitespace();
+
             let byte = match self.peek() {
-                None => {
-                    // EOF: If descriptor's size is greater than zero, return
-                    // descriptor; otherwise, return failure.
-                    if self.output.is_empty() {
-                        return Err(ParseError::UnexpectedEOF);
-                    }
-                    return Ok(());
-                }
+                None => return Ok(()),
                 Some(b) => b,
             };
 
-            // whitespace: Do nothing.
-            if is_whitespace(byte) {
-                self.position += 1;
-                continue;
-            }
-
-            // Intentional deviation from the spec, see:
-            // https://github.com/w3c/css-houdini-drafts/issues/893
-            if !self.output.is_empty() && byte != b'|' {
+            if byte != b'|' {
                 return Err(ParseError::ExpectedPipeBetweenComponents);
             }
 
-            if byte == b'|' {
-                self.position += 1;
-            }
-            let component = self.parse_component()?;
-            self.output.push(component);
+            self.position += 1;
         }
     }
 
@@ -329,6 +314,11 @@ mod tests {
         for syntax in &["foo bar", "Foo <length>",  "foo, bar", "<length> <percentage>"] {
             assert_eq!(parse_descriptor(syntax), Err(ParseError::ExpectedPipeBetweenComponents))
         }
+    }
+
+    #[test]
+    fn leading_bar() {
+        assert!(parse_descriptor("|<length>").is_err());
     }
 
     #[test]
